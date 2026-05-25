@@ -10,6 +10,7 @@ import time
 import json
 import logging
 import logging.handlers
+import threading
 from collections import deque
 from datetime import datetime, timezone
 from functools import wraps
@@ -203,6 +204,9 @@ class APIUsageCounter:
     def __init__(self):
         self.counts = {}
         self.usage_file = LOG_DIR / 'api_usage_counts.json'
+        # Guards self.counts and the file write — parallel image workers
+        # (ThreadPoolExecutor in generate_story) call record() concurrently.
+        self._lock = threading.Lock()
         self._load()
 
     def _load(self):
@@ -213,6 +217,7 @@ class APIUsageCounter:
                 self.counts = {}
 
     def _save(self):
+        # Callers already hold self._lock.
         try:
             self.usage_file.write_text(json.dumps(self.counts, indent=2))
         except Exception as e:
@@ -224,34 +229,37 @@ class APIUsageCounter:
         today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
         key = f'{today}:{api_name}'
 
-        if key not in self.counts:
-            self.counts[key] = {
-                'date': today,
-                'api': api_name,
-                'total_calls': 0,
-                'success': 0,
-                'failures': 0,
-                'total_tokens': 0,
-                'total_cost_usd': 0.0,
-            }
+        with self._lock:
+            if key not in self.counts:
+                self.counts[key] = {
+                    'date': today,
+                    'api': api_name,
+                    'total_calls': 0,
+                    'success': 0,
+                    'failures': 0,
+                    'total_tokens': 0,
+                    'total_cost_usd': 0.0,
+                }
 
-        self.counts[key]['total_calls'] += 1
-        if success:
-            self.counts[key]['success'] += 1
-        else:
-            self.counts[key]['failures'] += 1
-        self.counts[key]['total_tokens'] += tokens
-        self.counts[key]['total_cost_usd'] += cost_usd
-        self._save()
+            self.counts[key]['total_calls'] += 1
+            if success:
+                self.counts[key]['success'] += 1
+            else:
+                self.counts[key]['failures'] += 1
+            self.counts[key]['total_tokens'] += tokens
+            self.counts[key]['total_cost_usd'] += cost_usd
+            self._save()
 
     def get_today_stats(self):
         """Return usage counters scoped to today (UTC)."""
         today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-        return {k: v for k, v in self.counts.items() if k.startswith(today)}
+        with self._lock:
+            return {k: v for k, v in self.counts.items() if k.startswith(today)}
 
     def get_all_stats(self):
         """Return all recorded usage stats across all days."""
-        return self.counts
+        with self._lock:
+            return dict(self.counts)
 
 
 # Singleton counter
@@ -324,11 +332,13 @@ class PerformanceTracker:
 
 
 def _get_memory_mb():
-    try:
-        import resource
-        return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1)
-    except ImportError:
-        pass
+    import sys
+    if sys.platform != 'win32':
+        try:
+            import resource  # type: ignore[import-not-found]
+            return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1)
+        except ImportError:
+            pass
     try:
         import psutil
         return round(psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024), 1)

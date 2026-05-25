@@ -1,0 +1,70 @@
+/* Page-flip transition for the story viewer card.
+ * Applied to #story-card. Uses CSS transforms only (GPU-composited). */
+
+.viewer-main { perspective: 2200px; }
+
+#story-card {
+  transform-style: preserve-3d;
+  transform-origin: left center;
+  transition: transform 520ms cubic-bezier(.22,.61,.36,1),
+              opacity   520ms ease;
+  will-change: transform, opacity;
+  backface-visibility: hidden;
+  touch-action: pan-y;
+}
+
+/* Drag tracking: no transition while the finger is down. */
+#story-card.pf-dragging { transition: none; }
+
+/* Forward flip (going to next page): curl the right edge over to the left. */
+#story-card.pf-flip-next-out { transform: rotateY(-160deg); opacity: .35; }
+#story-card.pf-flip-next-in  {
+  animation: pfFlipNextIn 520ms cubic-bezier(.22,.61,.36,1) both;
+}
+@keyframes pfFlipNextIn {
+  from { transform: rotateY(160deg); opacity: .35; }
+  to   { transform: rotateY(0);      opacity: 1;   }
+}
+
+/* Backward flip (going to previous page): mirror. */
+#story-card.pf-flip-prev-out { transform: rotateY(160deg); opacity: .35; }
+#story-card.pf-flip-prev-in  {
+  animation: pfFlipPrevIn 520ms cubic-bezier(.22,.61,.36,1) both;
+}
+@keyframes pfFlipPrevIn {
+  from { transform: rotateY(-160deg); opacity: .35; }
+  to   { transform: rotateY(0);       opacity: 1;   }
+}
+
+/* Soft paper shadow that travels with the curl. */
+#story-card::after {
+  content: "";
+  position: absolute; inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(0,0,0,.0), rgba(0,0,0,.0));
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+#story-card.pf-flip-next-out::after,
+#story-card.pf-flip-prev-out::after { opacity: .35; }
+#story-card.pf-flip-next-out::after {
+  background: linear-gradient(270deg, rgba(0,0,0,.55), transparent 45%);
+}
+#story-card.pf-flip-prev-out::after {
+  background: linear-gradient(90deg,  rgba(0,0,0,.55), transparent 45%);
+}
+
+/* Reduced-motion: collapse to a crossfade. */
+@media (prefers-reduced-motion: reduce) {
+  #story-card {
+    transition: opacity 200ms ease !important;
+    transform: none !important;
+    animation: none !important;
+  }
+  #story-card.pf-flip-next-out,
+  #story-card.pf-flip-prev-out { opacity: 0; transform: none !important; }
+  #story-card.pf-flip-next-in,
+  #story-card.pf-flip-prev-in  { animation: none !important; opacity: 1; }
+  #story-card::after { display: none; }
+}

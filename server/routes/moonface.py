@@ -13,6 +13,7 @@ import requests
 from flask import Blueprint, request, jsonify
 
 from auth import login_required
+from subscription_decorators import require_feature
 
 logger = logging.getLogger('brave_story.routes.moonface')
 
@@ -46,6 +47,7 @@ def _coerce(value, valid_set, default):
 
 @moonface_bp.route('/api/moonface/analyze', methods=['POST'])
 @login_required
+@require_feature('face_api')
 def analyze_face():
     data = request.get_json(silent=True) or {}
     image_data = data.get('image', '')

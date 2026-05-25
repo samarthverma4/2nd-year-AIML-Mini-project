@@ -40,7 +40,12 @@ def text_to_speech():
     data  = request.get_json() or {}
     text  = (data.get('text') or '').strip()
     voice = (data.get('voice') or DEFAULT_VOICE).strip()
-    speed = float(data.get('speed', 1.0))
+    try:
+        speed = float(data.get('speed', 1.0))
+    except (TypeError, ValueError):
+        return jsonify({'message': 'speed must be a number'}), 400
+    # Clamp to Azure's accepted range
+    speed = max(0.25, min(4.0, speed))
 
     if not text:
         return jsonify({'message': 'text is required'}), 400

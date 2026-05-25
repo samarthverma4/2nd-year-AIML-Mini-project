@@ -12,6 +12,18 @@ from typing import Any
 import database_v2 as db
 from auth import login_required
 from monitoring import usage_counter, perf_tracker
+from functools import wraps
+
+
+def admin_required(f):
+    """Decorator: require admin privileges (stacks with @login_required)."""
+    @wraps(f)
+    @login_required
+    def decorated(*args, **kwargs):
+        if not db.is_user_admin(g.user_id):
+            return jsonify({'message': 'Admin access required'}), 403
+        return f(*args, **kwargs)
+    return decorated
 
 logger = logging.getLogger('brave_story.routes.health')
 
@@ -46,7 +58,7 @@ def health_check():
 # ── Admin stats ──────────────────────────────────────────────────────
 
 @health_bp.route('/api/admin/stats', methods=['GET'])
-@login_required
+@admin_required
 def get_stats():
     """Return aggregated API usage and performance statistics for admin."""
     return jsonify({
@@ -59,7 +71,7 @@ def get_stats():
 # ── Storage info & blob management ───────────────────────────────────
 
 @health_bp.route('/api/storage/info', methods=['GET'])
-@login_required
+@admin_required
 def storage_info():
     """Return current storage backend and configuration details."""
     from cloud_storage import STORAGE_BACKEND, AZURE_CONTAINER, AWS_BUCKET, AWS_REGION
@@ -74,7 +86,7 @@ def storage_info():
 
 
 @health_bp.route('/api/storage/blobs', methods=['GET'])
-@login_required
+@admin_required
 def list_blobs():
     """List all blobs/images in the Azure Blob container."""
     from cloud_storage import STORAGE_BACKEND, AZURE_CONN_STR, AZURE_CONTAINER
@@ -100,7 +112,7 @@ def list_blobs():
 
 
 @health_bp.route('/api/storage/blobs/<path:filename>', methods=['GET'])
-@login_required
+@admin_required
 def get_blob_url(filename):
     """Get the public URL for a blob by filename."""
     from cloud_storage import STORAGE_BACKEND
@@ -115,7 +127,7 @@ def get_blob_url(filename):
 
 
 @health_bp.route('/api/storage/blobs/<path:filename>', methods=['DELETE'])
-@login_required
+@admin_required
 def delete_blob(filename):
     """Delete a blob from Azure Blob storage."""
     from cloud_storage import STORAGE_BACKEND
@@ -133,7 +145,7 @@ def delete_blob(filename):
 
 
 @health_bp.route('/api/storage/blobs/upload', methods=['POST'])
-@login_required
+@admin_required
 def upload_blob():
     """Upload an image file directly to Azure Blob storage."""
     from cloud_storage import STORAGE_BACKEND

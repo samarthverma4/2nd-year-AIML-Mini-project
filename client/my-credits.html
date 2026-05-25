@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>My Credits — Cartoon Care</title>
+  <title>My Subscription — Cartoon Care</title>
   <link rel="icon" href="data:," />
   <link rel="stylesheet" href="/css/styles.css" />
   <link rel="stylesheet" href="/css/dashboard.css" />
@@ -36,7 +36,7 @@
       stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
       <polyline points="9 18 15 12 9 6"/>
     </svg>
-    <span>My Credits</span>
+    <span>My Subscription</span>
   </div>
 
   <div class="dashboard-header">
@@ -46,78 +46,104 @@
         style="vertical-align: middle; color: var(--accent); margin-right: .5rem;">
         <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
       </svg>
-      My Story Credits
+      My Subscription
     </h1>
-    <p id="user-greeting">Track your story generation credit usage</p>
+    <p id="user-greeting">Your plan, usage, and what you unlock at each tier.</p>
   </div>
 
-  <!-- ── Stat Cards ──────────────────────────────────── -->
-  <div class="stats-row" id="stats-row">
-    <div class="dash-skeleton"></div>
-    <div class="dash-skeleton"></div>
-    <div class="dash-skeleton"></div>
-    <div class="dash-skeleton"></div>
+  <style>
+    .sub-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem;
+      margin-bottom: 2rem;
+    }
+    .sub-card {
+      background: var(--card);
+      border: 2px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.5rem;
+    }
+    .sub-card .lbl {
+      font-size: .8rem;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      color: var(--muted-fg);
+      margin-bottom: .5rem;
+    }
+    .sub-card .val {
+      font-family: var(--font-display);
+      font-size: 1.75rem;
+      font-weight: 700;
+      color: var(--foreground);
+    }
+    .sub-card .val small { font-size: .9rem; color: var(--muted-fg); font-weight: 500; }
+    .sub-tier {
+      display: inline-block;
+      padding: .35rem .85rem;
+      border-radius: 9999px;
+      font-family: var(--font-display);
+      font-weight: 600;
+      font-size: .9rem;
+      letter-spacing: .03em;
+      text-transform: uppercase;
+      background: var(--primary-light);
+      color: var(--primary);
+    }
+    .sub-tier.caregiver { background: #fce7f3; color: #be185d; }
+    .sub-tier.hospital  { background: #dcfce7; color: #15803d; }
+    .progress {
+      height: 8px;
+      background: var(--muted);
+      border-radius: 9999px;
+      overflow: hidden;
+      margin-top: .75rem;
+    }
+    .progress > div {
+      height: 100%;
+      background: var(--primary);
+      transition: width .4s ease;
+    }
+    .progress.warn > div { background: var(--accent); }
+    .progress.danger > div { background: var(--destructive); }
+
+    .feature-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: .5rem .75rem;
+    }
+    .feature-list li {
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+      padding: .4rem 0;
+      font-size: .95rem;
+    }
+    .feature-list li.no { color: var(--muted-fg); opacity: .65; text-decoration: line-through; }
+    .feature-list .ico { width: 18px; height: 18px; flex-shrink: 0; }
+    .upgrade-cta { margin-top: 1.5rem; }
+  </style>
+
+  <!-- ── Subscription summary cards ──────────────────── -->
+  <div class="sub-grid" id="sub-summary">
+    <div class="dash-skeleton" style="height:120px"></div>
+    <div class="dash-skeleton" style="height:120px"></div>
+    <div class="dash-skeleton" style="height:120px"></div>
   </div>
 
-  <div class="dashboard-grid-2">
-    <!-- ── Usage History Chart ────────────────────────── -->
-    <div class="dashboard-section" id="history-section">
-      <div class="section-header">
-        <div>
-          <h2>My Usage History</h2>
-          <p class="section-desc">Your daily credit consumption</p>
-        </div>
-        <button class="btn-refresh" id="refresh-btn" onclick="loadAll()">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
-            stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="23 4 23 10 17 10"/>
-            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-          </svg>
-          Refresh
-        </button>
-      </div>
-      <div class="chart-container" id="history-chart">
-        <div class="dash-skeleton" style="height:200px"></div>
-      </div>
-      <div class="chart-legend">
-        <div class="chart-legend-item"><div class="chart-legend-dot flux"></div> Image Generation</div>
-        <div class="chart-legend-item"><div class="chart-legend-dot claude"></div> Story Generation</div>
-      </div>
-    </div>
-
-    <!-- ── API Usage Breakdown ────────────────────────── -->
-    <div class="dashboard-section" id="breakdown-section">
-      <h2>Credit Breakdown</h2>
-      <p class="section-desc">How your credits are being used</p>
-      <div id="api-breakdown">
-        <div class="dash-skeleton" style="height:200px"></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ── Story Credits Table ─────────────────────────── -->
-  <div class="dashboard-section" id="stories-section">
+  <!-- ── Plan features ───────────────────────────────── -->
+  <div class="dashboard-section" id="features-section">
     <div class="section-header">
       <div>
-        <h2>Story Generation Credits</h2>
-        <p class="section-desc">Credits used for each story you've created</p>
+        <h2>What's included in your plan</h2>
+        <p class="section-desc" id="features-desc">Loading…</p>
       </div>
     </div>
-    <div class="data-table-wrap">
-      <table class="data-table" id="stories-table">
-        <thead>
-          <tr>
-            <th>Story</th>
-            <th>Created</th>
-            <th>API Calls</th>
-            <th>Credits Used</th>
-          </tr>
-        </thead>
-        <tbody id="stories-tbody">
-          <tr><td colspan="4"><div class="dash-skeleton" style="height:60px"></div></td></tr>
-        </tbody>
-      </table>
-    </div>
+    <ul class="feature-list" id="feature-list"></ul>
+    <div class="upgrade-cta" id="upgrade-cta"></div>
   </div>
 
 </main>

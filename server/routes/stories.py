@@ -10,13 +10,36 @@ import json
 import time
 import logging
 import base64
+import re
 import requests
 from urllib.parse import urlparse
+from concurrent.futures import ThreadPoolExecutor
+
+
+# Words that frequently trigger Azure image content moderation. We strip
+# these from a prompt before retrying when the first call gets a
+# `moderation_blocked` response.
+_MODERATION_TRIGGER_WORDS = re.compile(
+    r'\b(needle|needles|syringe|syringes|blood|wound|wounds|gore|gory|injection|'
+    r'injections|scary|frightening|terrified|terror|hospital|clinical|cold medical|'
+    r'sick|illness|disease|patient|dying|death|hurt|pain|painful|scar|scars|surgery)\b',
+    re.IGNORECASE,
+)
+
+
+def _sanitize_for_moderation_retry(prompt: str) -> str:
+    """Remove tokens known to upset Azure's image content filter, for a one-shot retry."""
+    cleaned = _MODERATION_TRIGGER_WORDS.sub('', prompt)
+    # Collapse any whitespace gaps the substitution left behind.
+    cleaned = re.sub(r'\s{2,}', ' ', cleaned)
+    return cleaned
 
 from flask import Blueprint, request, jsonify, g, Response
 
 import database_v2 as db
 from auth import login_required
+from subscription_decorators import check_usage_limit, require_feature
+from subscription_service import increment_usage, decrement_usage
 from content_safety import validate_input, moderate_output, moderate_image_prompt, sanitize_html
 from monitoring import usage_counter, AIGenerationTracker, perf_tracker
 from prompt_manager import build_story_prompt, build_image_prompt, build_character_description
@@ -104,6 +127,7 @@ def list_children():
 
 @stories_bp.route('/api/children', methods=['POST'])
 @login_required
+@check_usage_limit('child_profile')
 def add_child():
     """Create a new child profile.
 
@@ -244,14 +268,39 @@ def _generate_image_azure_gpt(api_key, endpoint, prompt):
     payload = {
         'prompt': prompt,
         'n': 1,
-        'size': '1024x1024',
+        'size': '1536x1024',
     }
-    resp = requests.post(endpoint, headers=headers, json=payload, timeout=120)
-    resp.raise_for_status()
+    print(f'[IMG] POST {endpoint[:80]}... size={payload["size"]}', flush=True)
+    resp = requests.post(endpoint, headers=headers, json=payload, timeout=180)
+    print(f'[IMG] response status={resp.status_code}', flush=True)
+
+    # Retry once with a sanitized prompt if Azure's content filter fired.
+    if resp.status_code == 400 and 'moderation_blocked' in resp.text:
+        print('[IMG] moderation_blocked — retrying with sanitized prompt', flush=True)
+        payload['prompt'] = _sanitize_for_moderation_retry(prompt)
+        resp = requests.post(endpoint, headers=headers, json=payload, timeout=180)
+        print(f'[IMG] retry status={resp.status_code}', flush=True)
+
+    if not resp.ok:
+        print(f'[IMG] error body: {resp.text[:800]}', flush=True)
+        logger.error('gpt-image %s: %s', resp.status_code, resp.text[:500])
+        resp.raise_for_status()
     data = resp.json()
-    b64 = data['data'][0].get('b64_json')
+    items = data.get('data') or []
+    if not items:
+        logger.error('gpt-image returned no data: %s', str(data)[:300])
+        return None
+    entry = items[0]
+    b64 = entry.get('b64_json')
     if b64:
         return base64.b64decode(b64)
+    # Some deployments return a URL instead — fetch it.
+    url = entry.get('url')
+    if url:
+        img_resp = requests.get(url, timeout=60)
+        img_resp.raise_for_status()
+        return img_resp.content
+    logger.error('gpt-image entry has neither b64_json nor url: %s', str(entry)[:300])
     return None
 
 
@@ -259,8 +308,9 @@ def _generate_image_azure_gpt(api_key, endpoint, prompt):
 
 @stories_bp.route('/api/stories/generate', methods=['POST'])
 @login_required
+@check_usage_limit('storybook')
 def generate_story():
-    """Generate a new story using Claude Sonnet 4.6 + Azure gpt-image-1.5.
+    """Generate a new story using Azure OpenAI GPT-5.5 + Azure gpt-image-1.5.
 
     Accepts JSON with ``childName``, ``age``, ``gender``, ``condition``,
     ``heroCharacteristics``, and optional ``childId``.  Validates all
@@ -268,6 +318,7 @@ def generate_story():
     """
     start_time = time.time()
     user_id = g.user_id
+    usage_reserved = False  # set True once a slot is reserved; released on failure
 
     try:
         data = request.get_json()
@@ -278,7 +329,7 @@ def generate_story():
         if child_id:
             if not db.verify_child_owner(child_id, user_id):
                 return jsonify({'message': 'Child profile not found'}), 404
-            child_profile = db.get_child(child_id)
+            child_profile = db.get_child(child_id, user_id=user_id)
 
         if child_profile:
             child_name = child_profile.get('name', '').strip()
@@ -319,6 +370,15 @@ def generate_story():
             logger.warning(f'Input validation failed: {error}')
             return jsonify({'message': error}), 400
 
+        # Reserve the usage slot up-front (before the long, expensive AI calls)
+        # so concurrent requests can't all pass the @check_usage_limit gate and
+        # exceed the cap.
+        try:
+            increment_usage(user_id, 'storybook')
+            usage_reserved = True
+        except Exception as e:
+            logger.warning(f'Failed to reserve usage slot: {e}')
+
         # Load personalization data if a child profile is linked
         preferences = []
         story_history = []
@@ -329,16 +389,15 @@ def generate_story():
             except Exception as e:
                 logger.warning(f'Failed to load personalization: {e}')
 
-        # 1. Generate story text with Claude Sonnet 4.6 (Azure AI Foundry)
-        claude_key = os.environ.get('CLAUDE_API_KEY', '')
-        claude_endpoint = os.environ.get('CLAUDE_ENDPOINT', '')
-        claude_model = os.environ.get('CLAUDE_MODEL', 'claude-sonnet-4-6')
-        if not claude_key or not claude_endpoint:
-            return jsonify({'message': 'CLAUDE_API_KEY / CLAUDE_ENDPOINT not configured'}), 500
-
-        from anthropic import AnthropicFoundry
-
-        anthropic_client = AnthropicFoundry(api_key=claude_key, base_url=claude_endpoint)
+        # 1. Generate story text with Azure OpenAI Responses API (GPT-5.5)
+        # Falls back to legacy CLAUDE_* env vars during migration.
+        text_key = (os.environ.get('AZURE_OPENAI_TEXT_API_KEY')
+                    or os.environ.get('CLAUDE_API_KEY') or '')
+        text_endpoint = (os.environ.get('AZURE_OPENAI_TEXT_ENDPOINT')
+                         or os.environ.get('CLAUDE_ENDPOINT') or '')
+        text_model = os.environ.get('AZURE_OPENAI_TEXT_MODEL', 'gpt-5.5')
+        if not text_key or not text_endpoint:
+            return jsonify({'message': 'AZURE_OPENAI_TEXT_API_KEY / AZURE_OPENAI_TEXT_ENDPOINT not configured'}), 500
 
         prompt = build_story_prompt(
             child_name=child_name, age=age, gender=gender,
@@ -350,17 +409,43 @@ def generate_story():
             character_description=character_description,
         )
 
-        with AIGenerationTracker('claude', claude_model):
+        # 'claude' tracker tag kept for credit/monitoring continuity — it now
+        # measures Azure OpenAI text generation regardless of underlying model.
+        with AIGenerationTracker('claude', text_model):
             claude_start = time.time()
-            result = anthropic_client.messages.create(
-                model=claude_model,
-                max_tokens=4096,
-                messages=[{'role': 'user', 'content': prompt}],
+            resp = requests.post(
+                text_endpoint,
+                headers={'api-key': text_key, 'Content-Type': 'application/json'},
+                json={
+                    'model': text_model,
+                    'input': prompt,
+                    'max_output_tokens': 4096,
+                },
+                timeout=120,
             )
-            content = ''.join(
-                getattr(block, 'text', '') for block in result.content
-                if getattr(block, 'type', None) == 'text'
-            ).strip()
+            resp.raise_for_status()
+            result = resp.json()
+
+            # Azure Responses API: prefer `output_text`, else walk `output[*].content[*].text`
+            content = (result.get('output_text') or '').strip()
+            if not content:
+                parts = []
+                for item in result.get('output', []) or []:
+                    for block in item.get('content', []) or []:
+                        txt = block.get('text')
+                        if isinstance(txt, str):
+                            parts.append(txt)
+                        elif isinstance(txt, dict) and 'value' in txt:
+                            parts.append(txt['value'])
+                content = ''.join(parts).strip()
+
+            if not content:
+                # Empty response — log full shape so we can diagnose (refusal, filter, truncation, etc.)
+                print(f'[TEXT] EMPTY response. status={resp.status_code} body={resp.text[:2000]}', flush=True)
+                logger.error('GPT-5.5 returned empty content. Response: %s', resp.text[:1500])
+                usage_counter.record('claude', success=False)
+                return jsonify({'message': 'Story text generation returned empty — likely blocked by content filter. Try different inputs.'}), 502
+
             claude_ms = int((time.time() - claude_start) * 1000)
             usage_counter.record('claude', success=True)
 
@@ -373,12 +458,19 @@ def generate_story():
             content = content[:-3]
         content = content.strip()
 
-        story_data = json.loads(content)
+        try:
+            story_data = json.loads(content)
+        except json.JSONDecodeError:
+            print(f'[TEXT] NON-JSON response (len={len(content)}). content[:500]={content[:500]!r}', flush=True)
+            print(f'[TEXT] full raw response: {resp.text[:2000]}', flush=True)
+            logger.error('GPT-5.5 returned non-JSON. content=%r raw=%s', content[:500], resp.text[:1500])
+            usage_counter.record('claude', success=False)
+            return jsonify({'message': 'Story text was not valid JSON — likely a content filter or refusal. Try different inputs.'}), 502
 
         # 1b. Content safety: moderate AI output
         all_moderation_flags = []
         for page in story_data.get('pages', []):
-            cleaned_text, warnings = moderate_output(page['text'], age)
+            cleaned_text, warnings = moderate_output(page.get('text', ''), age)
             page['text'] = sanitize_html(cleaned_text)
             all_moderation_flags.extend(warnings)
 
@@ -389,25 +481,25 @@ def generate_story():
         if all_moderation_flags:
             logger.warning(f'Moderation flags for story: {all_moderation_flags}')
 
-        db.log_api_call('claude', claude_model, True,
+        db.log_api_call('claude', text_model, True,
                         int((time.time() - start_time) * 1000), user_id=user_id)
 
         # 2. Generate images with Azure gpt-image-1.5
         azure_img_key = os.environ.get('AZURE_GPT_IMAGE_API_KEY', '')
         azure_img_endpoint = os.environ.get('AZURE_GPT_IMAGE_ENDPOINT', '')
 
-        pages_with_images = []
         imagen_start = time.time()
+        total_pages = len(story_data['pages'])
 
-        for idx, page in enumerate(story_data['pages']):
-            image_url = None
+        def _make_page_image(idx_page):
+            idx, page = idx_page
             img_prompt = build_image_prompt(
                 page['imagePrompt'], child_name, age,
-                gender, idx + 1, len(story_data['pages']),
+                gender, idx + 1, total_pages,
                 illustration_style=illustration_style,
                 character_description=character_description,
             )
-
+            image_url = None
             if azure_img_key and azure_img_endpoint and _image_storage:
                 try:
                     with AIGenerationTracker('azure_gpt_image', 'gpt-image-1.5', page_num=idx + 1):
@@ -420,16 +512,21 @@ def generate_story():
                     db.log_api_call('azure_gpt_image', 'gpt-image-1.5', bool(image_url),
                                     user_id=user_id)
                 except Exception as e:
+                    print(f'[IMG] page {idx+1} EXCEPTION: {type(e).__name__}: {e}', flush=True)
                     logger.error(f'Azure image generation error page {idx + 1}: {e}')
                     usage_counter.record('azure_gpt_image', success=False)
                     db.log_api_call('azure_gpt_image', 'gpt-image-1.5', False,
                                     error_message=str(e), user_id=user_id)
-
-            pages_with_images.append({
+            return {
                 'text': page['text'],
                 'imageUrl': image_url,
                 'pageNumber': idx + 1,
-            })
+            }
+
+        # Generate all page images in parallel — biggest latency win.
+        max_workers = min(total_pages, 6) or 1
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            pages_with_images = list(pool.map(_make_page_image, enumerate(story_data['pages'])))
 
         # 3. Save to DB
         generation_time_ms = int((time.time() - start_time) * 1000)
@@ -446,6 +543,10 @@ def generate_story():
 
         if not story:
             return jsonify({'message': 'Failed to save story'}), 500
+
+        # Story persisted — the up-front reservation is now committed, so the
+        # finally block must not release it.
+        usage_reserved = False
 
         perf_tracker.record_generation(
             story_id=story.get('id', 0),
@@ -467,9 +568,98 @@ def generate_story():
         logger.error(f'Story generation error: {e}', exc_info=True)
         perf_tracker.record_error(type(e).__name__)
         return jsonify({'message': str(e)}), 500
+    finally:
+        # Any path that leaves without a committed story (early-return failures
+        # or an exception) must release the slot reserved up-front so a failed
+        # generation never permanently burns the user's monthly quota.
+        if usage_reserved:
+            try:
+                decrement_usage(user_id, 'storybook')
+            except Exception as e:
+                logger.warning(f'Failed to release reserved usage slot: {e}')
 
 
 # ── Feedback & Personalization Routes ─────────────────────────────────
+
+@stories_bp.route('/api/stories/<int:story_id>/pdf', methods=['GET'])
+@login_required
+@require_feature('pdf_export')
+def export_story_pdf(story_id):
+    """Render a story as a downloadable PDF (Caregiver+ tier)."""
+    story = db.get_story(story_id, user_id=g.user_id)
+    if not story:
+        return jsonify({'message': 'Story not found'}), 404
+    story = _refresh_image_urls(story)
+
+    try:
+        from io import BytesIO
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import cm
+        from reportlab.lib.enums import TA_CENTER
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer, PageBreak, Image as RLImage,
+        )
+    except ImportError:
+        return jsonify({'message': 'PDF export not available — reportlab missing'}), 503
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+                            leftMargin=2*cm, rightMargin=2*cm,
+                            topMargin=2*cm, bottomMargin=2*cm)
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle('cc-title', parent=styles['Title'],
+                                 fontSize=24, alignment=TA_CENTER, spaceAfter=20)
+    body_style = ParagraphStyle('cc-body', parent=styles['BodyText'],
+                                fontSize=13, leading=20, spaceAfter=10)
+
+    elements = [
+        Paragraph(story.get('storyTitle') or "A Brave Story", title_style),
+        Paragraph(f"For {story.get('childName', '')}", styles['Italic']),
+        Spacer(1, 0.6*cm),
+    ]
+
+    pages = story.get('pages') or []
+    for idx, page in enumerate(pages):
+        if idx > 0:
+            elements.append(PageBreak())
+
+        img_url = page.get('imageUrl') or ''
+        if img_url:
+            try:
+                if img_url.startswith('http'):
+                    resp = requests.get(img_url, timeout=15)
+                    resp.raise_for_status()
+                    img_data = BytesIO(resp.content)
+                else:
+                    # Local URL like /generated_images/xxx.png
+                    fname = _extract_s3_filename(img_url) or img_url.lstrip('/')
+                    local_path = os.path.join(
+                        os.path.dirname(__file__), '..', '..', 'client', 'generated_images', fname,
+                    )
+                    img_data = open(local_path, 'rb')
+                img = RLImage(img_data, width=14*cm, height=14*cm, kind='proportional')
+                img.hAlign = 'CENTER'
+                elements.append(img)
+                elements.append(Spacer(1, 0.4*cm))
+            except Exception as e:
+                logger.warning(f'PDF image embed failed for page {idx + 1}: {e}')
+
+        text = (page.get('text') or '').replace('\n', '<br/>')
+        elements.append(Paragraph(text, body_style))
+
+    doc.build(elements)
+    buf.seek(0)
+
+    safe_title = ''.join(c for c in (story.get('storyTitle') or 'story')
+                         if c.isalnum() or c in ' -_').strip().replace(' ', '_') or 'story'
+    return Response(
+        buf.getvalue(),
+        mimetype='application/pdf',
+        headers={'Content-Disposition': f'attachment; filename="{safe_title}.pdf"'},
+    )
+
 
 @stories_bp.route('/api/stories/<int:story_id>/feedback', methods=['POST'])
 @login_required

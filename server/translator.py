@@ -1,23 +1,21 @@
 """
-Azure AI Translator
-───────────────────
-Thin wrapper around the Azure Translator Text REST API (v3.0).
-
-Supports Azure's inline dynamic-dictionary markup
-(``<mstrans:dictionary translation="...">``) so character names and other
-proper nouns can be passed through verbatim.
+Translation via Azure OpenAI (gpt-realtime-translate)
+─────────────────────────────────────────────────────
+Wraps an Azure OpenAI chat-completion deployment to translate a list of
+strings into a target language. Proper nouns (e.g. the hero's name) can
+be passed via ``protected_terms`` and are preserved verbatim through a
+system-prompt instruction.
 
 Required env vars:
-  AZURE_TRANSLATOR_KEY       — subscription key
-  AZURE_TRANSLATOR_ENDPOINT  — default https://api.cognitive.microsofttranslator.com/
-  AZURE_TRANSLATOR_REGION    — Azure region, required for multi-service resources
-                               (e.g. "eastus2")
+  AZURE_OPENAI_TRANSLATE_API_KEY   — subscription key
+  AZURE_OPENAI_TRANSLATE_ENDPOINT  — full chat-completions URL incl. api-version
+  AZURE_OPENAI_TRANSLATE_MODEL     — deployment / model id (default: gpt-realtime-translate)
 """
 
 import os
-import re
+import json
 import logging
-from typing import List, Optional, Tuple
+from typing import List, Optional
 import requests
 
 logger = logging.getLogger('brave_story.translator')
@@ -48,27 +46,26 @@ LANGUAGES = [
 
 LANG_CODES = {L['code'] for L in LANGUAGES}
 RTL_LANGS  = {L['code'] for L in LANGUAGES if L['rtl']}
+LANG_NAMES = {L['code']: L['name'] for L in LANGUAGES}
 
 # Frontend historically uses ISO-639-1 "zh" — accept that alias.
 LANG_ALIASES = {'zh': 'zh-Hans'}
 
-DEFAULT_ENDPOINT = 'https://api.cognitive.microsofttranslator.com/'
-
 
 def _key() -> str:
-    return os.environ.get('AZURE_TRANSLATOR_KEY', '')
+    return os.environ.get('AZURE_OPENAI_TRANSLATE_API_KEY', '')
 
 
 def _endpoint() -> str:
-    return os.environ.get('AZURE_TRANSLATOR_ENDPOINT', DEFAULT_ENDPOINT).rstrip('/')
+    return os.environ.get('AZURE_OPENAI_TRANSLATE_ENDPOINT', '').strip()
 
 
-def _region() -> str:
-    return os.environ.get('AZURE_TRANSLATOR_REGION', '').strip()
+def _model() -> str:
+    return os.environ.get('AZURE_OPENAI_TRANSLATE_MODEL', 'gpt-realtime-translate')
 
 
 def is_available() -> bool:
-    return bool(_key())
+    return bool(_key() and _endpoint())
 
 
 def normalise_lang(code: str) -> str:
@@ -76,38 +73,22 @@ def normalise_lang(code: str) -> str:
     return LANG_ALIASES.get(code, code)
 
 
-def _escape_html(s: str) -> str:
-    return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-
-
-def _wrap_with_dictionary(text: str, protected_terms: List[str]) -> Tuple[str, bool]:
-    """Wrap protected terms in Azure's dynamic-dictionary markup.
-
-    Returns (wrapped_text, used_markup). If no terms matched, the original
-    (HTML-escaped) text is returned with ``used_markup=False``.
-    """
-    safe_text = _escape_html(text)
-    if not protected_terms:
-        return text, False
-
-    used = False
-    # Sort longest-first so "Luna Grace" wraps before "Luna".
-    terms = sorted(
-        {t.strip() for t in protected_terms if t and len(t.strip()) > 1},
-        key=len,
-        reverse=True,
+def _build_system_prompt(target_name: str, protected_terms: List[str]) -> str:
+    base = (
+        f"You are a precise translator. Translate every input string into {target_name}. "
+        "Respond with ONLY a JSON object of the form "
+        '{"translations": ["...", "...", ...]} — same length, same order as inputs. '
+        "Preserve line breaks. Do not add commentary or explanation. "
+        "Do not translate inside HTML tags."
     )
-    for term in terms:
-        pattern = re.compile(r'\b' + re.escape(_escape_html(term)) + r'\b')
-
-        def repl(m, _t=term):
-            nonlocal used
-            used = True
-            return f'<mstrans:dictionary translation="{_escape_html(_t)}">{m.group(0)}</mstrans:dictionary>'
-
-        safe_text = pattern.sub(repl, safe_text)
-
-    return (safe_text, True) if used else (text, False)
+    terms = [t for t in (protected_terms or []) if t and isinstance(t, str)]
+    if terms:
+        joined = ', '.join(f'"{t}"' for t in terms)
+        base += (
+            f" Keep the following proper nouns verbatim — do not translate or transliterate "
+            f"them: {joined}."
+        )
+    return base
 
 
 def translate_batch(
@@ -118,7 +99,10 @@ def translate_batch(
 ) -> List[str]:
     """Translate a list of strings. Output order matches input order."""
     if not is_available():
-        raise RuntimeError('Azure Translator not configured — set AZURE_TRANSLATOR_KEY')
+        raise RuntimeError(
+            'Translator not configured — set AZURE_OPENAI_TRANSLATE_API_KEY '
+            'and AZURE_OPENAI_TRANSLATE_ENDPOINT'
+        )
 
     target_lang = normalise_lang(target_lang).strip()
     if target_lang not in LANG_CODES:
@@ -127,61 +111,75 @@ def translate_batch(
     if source_lang == target_lang:
         return list(texts)
 
-    # Build per-item payload. If any item uses dictionary markup, the whole
-    # request switches to html text-type (Azure requirement).
-    items = []
-    text_type = 'plain'
-    for t in texts:
-        wrapped, used = _wrap_with_dictionary(t, protected_terms or [])
-        items.append({'text': wrapped if used else t})
-        if used:
-            text_type = 'html'
+    target_name = LANG_NAMES.get(target_lang, target_lang)
+    system_prompt = _build_system_prompt(target_name, protected_terms or [])
+    user_payload = json.dumps({'inputs': list(texts)}, ensure_ascii=False)
 
-    # If we ended up mixing — promote all plain items to escaped HTML so Azure
-    # doesn't re-encode angle brackets in the output.
-    if text_type == 'html':
-        items = []
-        for t in texts:
-            wrapped, used = _wrap_with_dictionary(t, protected_terms or [])
-            items.append({'text': wrapped if used else _escape_html(t)})
-
-    params = {
-        'api-version': '3.0',
-        'from':        source_lang,
-        'to':          target_lang,
-        'textType':    text_type,
+    payload = {
+        'model': _model(),
+        'messages': [
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'user',   'content': user_payload},
+        ],
+        'max_tokens': 4096,
     }
     headers = {
-        'Ocp-Apim-Subscription-Key': _key(),
-        'Content-Type':              'application/json',
+        'api-key':       _key(),
+        'Content-Type':  'application/json',
     }
-    region = _region()
-    if region:
-        headers['Ocp-Apim-Subscription-Region'] = region
 
-    url = _endpoint() + '/translate'
     try:
-        resp = requests.post(url, params=params, headers=headers, json=items, timeout=30)
+        resp = requests.post(_endpoint(), headers=headers, json=payload, timeout=60)
     except requests.RequestException as exc:
-        logger.error('Azure Translator network error: %s', exc)
+        logger.error('Translator network error: %s', exc)
         raise
 
     if not resp.ok:
-        logger.error('Azure Translator %s: %s', resp.status_code, resp.text[:500])
+        logger.error('Translator %s: %s', resp.status_code, resp.text[:500])
         resp.raise_for_status()
 
-    data = resp.json()
+    try:
+        body = resp.json()
+        # Azure OpenAI Chat Completions: choices[0].message.content
+        content = ''
+        choices = body.get('choices') or []
+        if choices:
+            message = choices[0].get('message') or {}
+            msg_content = message.get('content')
+            if isinstance(msg_content, str):
+                content = msg_content.strip()
+            elif isinstance(msg_content, list):
+                # Some deployments return content as a list of parts.
+                parts = []
+                for block in msg_content:
+                    txt = block.get('text') if isinstance(block, dict) else None
+                    if isinstance(txt, str):
+                        parts.append(txt)
+                content = ''.join(parts).strip()
+
+        # Strip markdown code fences if model wrapped JSON.
+        if content.startswith('```json'):
+            content = content[7:]
+        elif content.startswith('```'):
+            content = content[3:]
+        if content.endswith('```'):
+            content = content[:-3]
+        content = content.strip()
+
+        parsed = json.loads(content)
+        translations = parsed.get('translations') or []
+    except (KeyError, IndexError, ValueError, TypeError) as exc:
+        logger.error('Translator response parse error: %s — body=%s', exc, resp.text[:500])
+        raise RuntimeError('Translator returned an unparseable response')
+
+    # Fall back to original where the model dropped an entry.
     out = []
-    for original, entry in zip(texts, data):
-        trans = (entry.get('translations') or [{}])[0].get('text', '')
-        if text_type == 'html':
-            # Strip residual dictionary tags (Azure echoes them back).
-            trans = re.sub(r'</?mstrans:dictionary[^>]*>', '', trans)
-            # Un-escape the basic entities we introduced.
-            trans = (trans.replace('&amp;', '&')
-                          .replace('&lt;', '<')
-                          .replace('&gt;', '>'))
-        out.append(trans or original)
+    for i, original in enumerate(texts):
+        t = translations[i] if i < len(translations) else ''
+        if not isinstance(t, str) or not t.strip():
+            out.append(original)
+        else:
+            out.append(t)
     return out
 
 

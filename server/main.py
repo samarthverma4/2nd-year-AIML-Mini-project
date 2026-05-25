@@ -39,6 +39,8 @@ from routes.credits import credits_bp
 from routes.speech import speech_bp
 from routes.moonface import moonface_bp
 from routes.translation import translation_bp
+from routes.subscription import subscription_bp
+from routes.analytics import analytics_bp
 
 import logging
 logger = logging.getLogger('brave_story.app')
@@ -56,13 +58,15 @@ CORS(app, origins=[o.strip() for o in _allowed_origins.split(',')],
      supports_credentials=False)
 
 # ── Rate limiting (in-memory; swap to Redis for multi-process) ───────
+# No global default_limits — a single page load fans out into ~10 requests
+# (HTML + CSS + several JS files + nav-profile API calls), so a global 60/hour
+# cap meant a handful of hard refreshes would 429 the asset routes and leave
+# the page blank. Apply tight limits only to sensitive endpoints.
 limiter = Limiter(
     get_remote_address,
     app=app,
-    default_limits=["200 per day", "60 per hour"],
     storage_uri="memory://",
 )
-# Tighter limits on sensitive endpoints
 limiter.limit("10 per minute")(auth_bp)
 # Story generation is expensive — limit only that route, not all story reads
 
@@ -75,6 +79,8 @@ app.register_blueprint(credits_bp)
 app.register_blueprint(speech_bp)
 app.register_blueprint(moonface_bp)
 app.register_blueprint(translation_bp)
+app.register_blueprint(subscription_bp)
+app.register_blueprint(analytics_bp)
 
 # ── Request / response logging ───────────────────────────────────────
 
@@ -130,10 +136,11 @@ def _bust(html):
         '/js/nav-profile.js', '/js/admin-credits.js', '/js/my-credits.js',
         '/js/feedback.js', '/js/account.js', '/js/profiles.js',
         '/js/balloons.js', '/js/balloons-lib.js',
+        '/js/pricing.js', '/js/analytics.js', '/js/usage-widget.js',
     ):
         html = html.replace(f'{asset}"', f'{asset}?v={BUILD_TS}"')
     # Internal page links — prevents stale HTML from the browser cache
-    for page in ('create', 'login', 'story', 'admin-credits', 'my-credits', 'feedback', 'account', 'profiles'):
+    for page in ('create', 'login', 'story', 'admin-credits', 'my-credits', 'feedback', 'account', 'profiles', 'pricing', 'analytics'):
         html = html.replace(f'href="/{page}"', f'href="/{page}?v={BUILD_TS}"')
     html = html.replace('href="/"', f'href="/?v={BUILD_TS}"')
     return html
@@ -231,6 +238,20 @@ def serve_profiles():
     if redir: return redir
     return serve_html('profiles.html')
 
+@app.route('/pricing')
+def serve_pricing():
+    """Serve the subscription pricing page."""
+    redir = _ensure_version()
+    if redir: return redir
+    return serve_html('pricing.html')
+
+@app.route('/analytics')
+def serve_analytics():
+    """Serve the Hospital tier engagement analytics dashboard."""
+    redir = _ensure_version()
+    if redir: return redir
+    return serve_html('analytics.html')
+
 @app.route('/css/<path:filename>')
 def serve_css(filename):
     """Serve CSS assets from the client directory."""
@@ -242,7 +263,7 @@ def serve_js(filename):
     js_path = CLIENT_DIR / 'js' / filename
     content = js_path.read_text(encoding='utf-8')
     # Bust internal page links embedded in JS-generated HTML
-    for page in ('create', 'login', 'story', 'admin-credits', 'my-credits', 'feedback', 'account', 'profiles'):
+    for page in ('create', 'login', 'story', 'admin-credits', 'my-credits', 'feedback', 'account', 'profiles', 'pricing', 'analytics'):
         content = content.replace(f'href="/{page}"', f'href="/{page}?v={BUILD_TS}"')
     content = content.replace('href="/"', f'href="/?v={BUILD_TS}"')
     return Response(content, mimetype='application/javascript')
