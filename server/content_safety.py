@@ -128,10 +128,13 @@ def validate_input(child_name: str, age: int, condition: str,
     if len(condition) > 200:
         errors.append('Condition description is too long (max 200 characters).')
 
-    # Check for blocked content in inputs. The medical 'condition' field is
-    # exempt — it legitimately contains words ("blood disorder", "leukemia")
-    # that look like violence/horror tokens. Output moderation still applies.
+    # Check for blocked content in all free-text inputs, including the medical
+    # 'condition' field. Legitimate medical vocabulary ("blood disorder",
+    # "terminal", "leukemia") is protected by keeping those words OUT of
+    # BLOCKED_TERMS — not by exempting the field — so violence/abuse tokens
+    # ("kill", "weapon") are still rejected here.
     for field_name, field_val in [('name', child_name),
+                                   ('condition', condition),
                                    ('characteristics', hero_characteristics)]:
         for pattern in BLOCKED_PATTERNS:
             if pattern.search(field_val):
