@@ -6,6 +6,7 @@
   <title>Story · Brave Story Maker</title>
   <link rel="icon" href="data:," />
   <link rel="stylesheet" href="/css/styles.css" />
+  <link rel="stylesheet" href="/css/page-flip.css" />
 </head>
 <body>
 
@@ -70,6 +71,16 @@
         </svg>
       </button>
 
+      <button class="btn btn-icon hidden" id="pdf-btn" title="Download as PDF">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="12" y1="18" x2="12" y2="12"/>
+          <polyline points="9 15 12 18 15 15"/>
+        </svg>
+      </button>
+
       <button class="btn btn-icon" id="font-toggle-btn" title="Toggle font style">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
           stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -126,6 +137,17 @@
         </div>
       </div>
 
+      <button class="btn btn-icon" id="fullscreen-btn" title="Fullscreen (F)">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" id="fullscreen-icon-enter">
+          <path d="M3 7V3h4"/><path d="M21 7V3h-4"/><path d="M3 17v4h4"/><path d="M21 17v4h-4"/>
+        </svg>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" id="fullscreen-icon-exit" style="display:none">
+          <path d="M8 3v4H4"/><path d="M16 3v4h4"/><path d="M8 21v-4H4"/><path d="M16 21v-4h4"/>
+        </svg>
+      </button>
+
       <button class="btn btn-icon" id="settings-btn" title="Settings" style="display:none"></button>
 
     </div>
@@ -174,6 +196,14 @@
     <button class="btn btn-primary btn-sm auto-advance-btn auto-advance-skip" id="auto-advance-skip">Skip</button>
   </div>
 
+</div>
+
+<!-- TRANSLATION LOADING OVERLAY -->
+<div class="translate-overlay hidden" id="translate-overlay" aria-live="polite" aria-busy="true">
+  <div class="translate-overlay-card">
+    <div class="translate-spinner" aria-hidden="true"></div>
+    <p class="translate-overlay-text" id="translate-overlay-text">Translating story…</p>
+  </div>
 </div>
 
 <!-- TOAST -->

@@ -268,6 +268,55 @@ def init_db():
             _execute(conn,
                 "DELETE FROM credit_config WHERE config_key = 'gemini_cost_per_call'")
 
+        # ── Subscription tables & migrations ──────────────────────────
+        for _col, _def in [
+            ('subscription_tier',         "TEXT NOT NULL DEFAULT 'free'"),
+            ('subscription_status',       "TEXT NOT NULL DEFAULT 'active'"),
+            ('subscription_expires_at',   'TEXT'),
+            ('razorpay_subscription_id',  'TEXT'),
+            ('organisation_id',           'INTEGER'),
+        ]:
+            try:
+                _execute(conn, f'ALTER TABLE users ADD COLUMN {_col} {_def}')
+            except Exception:
+                pass
+
+        _execute(conn, '''
+            CREATE TABLE IF NOT EXISTS usage_counters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                month TEXT NOT NULL,
+                storybooks_generated INTEGER DEFAULT 0,
+                updated_at TEXT DEFAULT (datetime('now')),
+                UNIQUE(user_id, month),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        ''')
+
+        _execute(conn, '''
+            CREATE TABLE IF NOT EXISTS organisations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                logo_url TEXT,
+                hospital_plan_active INTEGER DEFAULT 1,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        ''')
+
+        _execute(conn, '''
+            CREATE TABLE IF NOT EXISTS payment_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                razorpay_payment_id TEXT,
+                razorpay_order_id TEXT,
+                amount_paise INTEGER,
+                tier TEXT,
+                status TEXT,
+                created_at TEXT DEFAULT (datetime('now')),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        ''')
+
         # ── Migrations: add missing columns to existing SQLite tables ──
         if not USE_POSTGRES:
             migrations = [
@@ -482,19 +531,25 @@ def get_children(user_id: int) -> list:
         return [row_to_child(r) for r in rows]
 
 
-def get_child(child_id: int) -> Optional[dict]:
+def get_child(child_id: int, user_id: Optional[int] = None) -> Optional[dict]:
+    if not user_id:
+        raise ValueError('get_child requires user_id for ownership scoping')
     with get_db() as conn:
-        row = _fetchone(conn, 'SELECT * FROM children WHERE id = ?', (child_id,))
+        row = _fetchone(conn, 'SELECT * FROM children WHERE id = ? AND user_id = ?', (child_id, user_id))
         return row_to_child(row) if row else None
 
 
 def update_child(child_id: int, user_id: Optional[int] = None, **kwargs) -> Optional[dict]:
+    if not user_id:
+        raise ValueError('update_child requires user_id for ownership scoping')
     # Whitelist of allowed column names — prevents SQL injection via key names
     ALLOWED_COLUMNS = {'name', 'age', 'gender', 'conditions', 'preferences',
                        'medical_challenge', 'characteristics', 'hero_character'}
     updates = {k: v for k, v in kwargs.items() if k in ALLOWED_COLUMNS}
     if not updates:
-        return get_child(child_id)
+        if not verify_child_owner(child_id, user_id):
+            return None
+        return get_child(child_id, user_id=user_id)
 
     if 'conditions' in updates:
         updates['conditions'] = json.dumps(updates['conditions'])
@@ -507,25 +562,18 @@ def update_child(child_id: int, user_id: Optional[int] = None, **kwargs) -> Opti
 
     with get_db() as conn:
         # Safe: keys are validated against ALLOWED_COLUMNS above
-        if user_id:
-            set_clause = ', '.join(f'{k} = ?' for k in updates.keys())
-            values = list(updates.values()) + [child_id, user_id]
-            _execute(conn, f'UPDATE children SET {set_clause} WHERE id = ? AND user_id = ?', values)
-            row = _fetchone(conn, 'SELECT * FROM children WHERE id = ? AND user_id = ?', (child_id, user_id))
-        else:
-            set_clause = ', '.join(f'{k} = ?' for k in updates.keys())
-            values = list(updates.values()) + [child_id]
-            _execute(conn, f'UPDATE children SET {set_clause} WHERE id = ?', values)
-            row = _fetchone(conn, 'SELECT * FROM children WHERE id = ?', (child_id,))
+        set_clause = ', '.join(f'{k} = ?' for k in updates.keys())
+        values = list(updates.values()) + [child_id, user_id]
+        _execute(conn, f'UPDATE children SET {set_clause} WHERE id = ? AND user_id = ?', values)
+        row = _fetchone(conn, 'SELECT * FROM children WHERE id = ? AND user_id = ?', (child_id, user_id))
         return row_to_child(row) if row else None
 
 
 def delete_child(child_id: int, user_id: Optional[int] = None) -> bool:
+    if not user_id:
+        raise ValueError('delete_child requires user_id for ownership scoping')
     with get_db() as conn:
-        if user_id:
-            cur = _execute(conn, 'DELETE FROM children WHERE id = ? AND user_id = ?', (child_id, user_id))
-        else:
-            cur = _execute(conn, 'DELETE FROM children WHERE id = ?', (child_id,))
+        cur = _execute(conn, 'DELETE FROM children WHERE id = ? AND user_id = ?', (child_id, user_id))
         return cur.rowcount > 0
 
 
@@ -560,63 +608,56 @@ def create_story(child_name: str, age: int, gender: str, condition: str,
 
 
 def get_story(story_id: int, user_id: Optional[int] = None) -> Optional[dict]:
+    if not user_id:
+        raise ValueError('get_story requires user_id for ownership scoping')
     with get_db() as conn:
-        if user_id:
-            row = _fetchone(conn, 'SELECT * FROM stories WHERE id = ? AND user_id = ?', (story_id, user_id))
-        else:
-            row = _fetchone(conn, 'SELECT * FROM stories WHERE id = ?', (story_id,))
+        row = _fetchone(conn, 'SELECT * FROM stories WHERE id = ? AND user_id = ?', (story_id, user_id))
         return row_to_story(row) if row else None
 
 
 def get_stories(user_id: Optional[int] = None) -> list:
+    if not user_id:
+        raise ValueError('get_stories requires user_id for ownership scoping')
     with get_db() as conn:
-        if user_id:
-            rows = _fetchall(conn,
-                'SELECT * FROM stories WHERE user_id = ? ORDER BY id DESC',
-                (user_id,)
-            )
-        else:
-            rows = _fetchall(conn, 'SELECT * FROM stories ORDER BY id DESC')
+        rows = _fetchall(conn,
+            'SELECT * FROM stories WHERE user_id = ? ORDER BY id DESC',
+            (user_id,)
+        )
         return [row_to_story(r) for r in rows]
 
 
 def get_favorite_stories(user_id: Optional[int] = None) -> list:
+    if not user_id:
+        raise ValueError('get_favorite_stories requires user_id for ownership scoping')
     with get_db() as conn:
-        if user_id:
-            rows = _fetchall(conn,
-                'SELECT * FROM stories WHERE is_favorite = 1 AND user_id = ? ORDER BY id DESC',
-                (user_id,)
-            )
-        else:
-            rows = _fetchall(conn,
-                'SELECT * FROM stories WHERE is_favorite = 1 ORDER BY id DESC'
-            )
+        rows = _fetchall(conn,
+            'SELECT * FROM stories WHERE is_favorite = 1 AND user_id = ? ORDER BY id DESC',
+            (user_id,)
+        )
         return [row_to_story(r) for r in rows]
 
 
 def toggle_favorite(story_id: int, user_id: Optional[int] = None) -> Optional[dict]:
+    if not user_id:
+        raise ValueError('toggle_favorite requires user_id for ownership scoping')
     with get_db() as conn:
-        if user_id:
-            row = _fetchone(conn, 'SELECT * FROM stories WHERE id = ? AND user_id = ?', (story_id, user_id))
-        else:
-            row = _fetchone(conn, 'SELECT * FROM stories WHERE id = ?', (story_id,))
+        row = _fetchone(conn, 'SELECT * FROM stories WHERE id = ? AND user_id = ?', (story_id, user_id))
         if not row:
             return None
         d = _row_to_dict(row)
         if d is None:
             return None
         new_val = 0 if d.get('is_favorite') else 1
-        _execute(conn, 'UPDATE stories SET is_favorite = ? WHERE id = ?', (new_val, story_id))
-        row = _fetchone(conn, 'SELECT * FROM stories WHERE id = ?', (story_id,))
+        _execute(conn, 'UPDATE stories SET is_favorite = ? WHERE id = ? AND user_id = ?', (new_val, story_id, user_id))
+        row = _fetchone(conn, 'SELECT * FROM stories WHERE id = ? AND user_id = ?', (story_id, user_id))
         return row_to_story(row)
 
 
 def delete_story(story_id: int, user_id: Optional[int] = None) -> bool:
+    if not user_id:
+        raise ValueError('delete_story requires user_id for ownership scoping')
     with get_db() as conn:
-        if user_id:
-            cur = _execute(conn, 'DELETE FROM stories WHERE id = ? AND user_id = ?', (story_id, user_id))
-        else:
-            cur = _execute(conn, 'DELETE FROM stories WHERE id = ?', (story_id,))
+        cur = _execute(conn, 'DELETE FROM stories WHERE id = ? AND user_id = ?', (story_id, user_id))
         return cur.rowcount > 0
 
 

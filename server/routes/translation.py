@@ -26,6 +26,7 @@ import logging
 from flask import Blueprint, request, jsonify, g
 
 from auth import login_required
+from subscription_decorators import require_feature
 from translator import (
     translate_batch, is_available, is_rtl, normalise_lang,
     LANGUAGES, LANG_CODES,
@@ -52,6 +53,7 @@ def translate_config():
 
 @translation_bp.route('/api/translate', methods=['POST'])
 @login_required
+@require_feature('multilingual_tts')
 def translate_endpoint():
     if not is_available():
         return jsonify({'message': 'Translation not available — Azure Translator not configured'}), 503

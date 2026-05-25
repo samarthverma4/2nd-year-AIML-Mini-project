@@ -16,8 +16,11 @@ logger = logging.getLogger('brave_story.content_safety')
 
 # ── Blocked terms: content that should NEVER appear ────────────────────────
 BLOCKED_TERMS = [
-    # Violence / horror
-    r'\b(kill|murder|suicide|self[- ]?harm|die|death|dead|blood|gore|weapon|gun|knife|stab)\b',
+    # Violence / horror — note: 'blood' is intentionally excluded here because
+    # legitimate medical conditions reference it (blood disorder, blood cancer,
+    # sickle cell). Output moderation still filters gory contexts via
+    # moderate_image_prompt.
+    r'\b(kill|murder|suicide|self[- ]?harm|gore|weapon|gun|knife|stab)\b',
     # Sexual content
     r'\b(sex|nude|naked|pornograph|erotic|molest|rape)\b',
     # Substance abuse
@@ -27,8 +30,9 @@ BLOCKED_TERMS = [
     r'\b(cure\s*yourself|no\s*need\s*for\s*treatment|reject\s*(your\s*)?treatment)\b',
     # Discrimination
     r'\b(racist|sexist|homophob|transphob|slur|hate\s*speech)\b',
-    # Fear-inducing medical content
-    r'\b(terminal|will\s*die|no\s*hope|give\s*up|hopeless|fatal)\b',
+    # Fear-inducing phrases — 'terminal'/'fatal'/'die' alone are too broad
+    # (block legitimate condition descriptions); only block clearly negative phrasings.
+    r'\b(will\s*die|no\s*hope|give\s*up|hopeless)\b',
 ]
 
 BLOCKED_PATTERNS = [re.compile(pat, re.IGNORECASE) for pat in BLOCKED_TERMS]
@@ -124,8 +128,10 @@ def validate_input(child_name: str, age: int, condition: str,
     if len(condition) > 200:
         errors.append('Condition description is too long (max 200 characters).')
 
-    # Check for blocked content in inputs
-    for field_name, field_val in [('name', child_name), ('condition', condition),
+    # Check for blocked content in inputs. The medical 'condition' field is
+    # exempt — it legitimately contains words ("blood disorder", "leukemia")
+    # that look like violence/horror tokens. Output moderation still applies.
+    for field_name, field_val in [('name', child_name),
                                    ('characteristics', hero_characteristics)]:
         for pattern in BLOCKED_PATTERNS:
             if pattern.search(field_val):
@@ -133,15 +139,16 @@ def validate_input(child_name: str, age: int, condition: str,
                 logger.warning(f'Blocked content in {field_name}: {pattern.pattern}')
                 break
 
-    # Injection prevention — block prompt injection attempts
+    # Injection prevention — block prompt injection attempts.
+    # Patterns require word boundaries / explicit phrasing to avoid blocking
+    # ordinary user text like "loves {video games}" or names containing "act as".
     injection_patterns = [
-        r'ignore\s*(previous|above|all)\s*(instructions|prompts)',
-        r'you\s*are\s*now',
-        r'system\s*prompt',
-        r'forget\s*(everything|all)',
-        r'act\s*as\s*(a|an)?',
-        r'pretend\s*to\s*be',
-        r'\{.*\}',  # JSON-like injection
+        r'\bignore\s+(previous|above|all)\s+(instructions|prompts)\b',
+        r'\byou\s+are\s+now\b',
+        r'\bsystem\s+prompt\b',
+        r'\bforget\s+(everything|all)\b',
+        r'\bact\s+as\s+(a|an)\s+\w+',
+        r'\bpretend\s+to\s+be\b',
     ]
     for field_val in [child_name, condition, hero_characteristics]:
         for pat in injection_patterns:
@@ -235,12 +242,19 @@ def moderate_image_prompt(prompt: str) -> Tuple[str, List[str]]:
 
 
 def sanitize_html(text: str) -> str:
-    """Remove any HTML/script injection from text and escape dangerous characters."""
+    """Strip HTML tags and dangerous URL/event handler syntax.
+
+    Returns plain text with tags removed. We do NOT HTML-entity-escape here:
+    sanitize_html is run repeatedly on stored values (e.g. on every edit), and
+    escaping & on each pass would compound into &amp;amp;... Frontends and
+    template engines are responsible for context-appropriate escaping on
+    render.
+    """
+    if not isinstance(text, str):
+        return text
     # Remove HTML tags
     text = re.sub(r'<[^>]+>', '', text)
     # Remove script-like content
     text = re.sub(r'javascript:', '', text, flags=re.IGNORECASE)
     text = re.sub(r'on\w+\s*=', '', text, flags=re.IGNORECASE)
-    # Escape remaining HTML-special characters
-    text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
     return text

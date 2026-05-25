@@ -249,12 +249,14 @@ Create something NEW and different - avoid repeating the same plot or theme.
         settings_parts.append(ending_map.get(ending_type, f'End with a {ending_type} ending.'))
     if illustration_style:
         style_map = {
+            'ghibli': 'Describe image prompts as soft Studio Ghibli watercolor-style paintings.',
+            'spider-punk': 'Describe image prompts as bold Spider-Verse comic-book panel illustrations.',
             'cartoon': 'Describe image prompts as bright cartoon-style illustrations.',
             'watercolor': 'Describe image prompts as soft watercolor-style paintings.',
             'comic-book': 'Describe image prompts as bold comic-book panel illustrations.',
             'pixel-art': 'Describe image prompts as retro pixel-art style illustrations.',
         }
-        settings_parts.append(style_map.get(illustration_style, f'Use {illustration_style} illustration style.'))
+        settings_parts.append(style_map.get(illustration_style.strip().lower(), f'Use {illustration_style} illustration style.'))
     if settings_parts:
         settings_block = '\nCUSTOM SETTINGS:\n' + '\n'.join(f'- {p}' for p in settings_parts) + '\n'
 
@@ -384,16 +386,161 @@ _GHIBLI_MEDICAL_SOFTENING = (
 )
 
 _GHIBLI_EXCLUSIONS = (
+    "Full-bleed edge-to-edge composition. NO border, NO white margin, NO paper edges, "
+    "NO frame, NO padding, NO matting — the artwork must fill the entire canvas. "
     "NO photorealistic rendering or textures. "
     "NO 3D modeling, ray tracing, or volumetric lighting. "
     "NO lens effects (bokeh, chromatic aberration, vignetting). "
     "NO visible text, watermarks, letters, numbers, or words anywhere in the image. "
     "NO sharp anime features (pointed chin, giant sparkly eyes, tiny nose bridge, exaggerated proportions). "
-    "NO dark, scary, gory, or unsettling imagery. "
-    "NO realistic needles, syringes, blood, or open wounds. "
-    "NO clinical cold medical environments. "
-    "NO adult content."
+    "Friendly, warm, child-safe imagery only — gentle and reassuring throughout."
 )
+
+# ── Spider-Verse style ───────────────────────────────────────────────
+# Sony 'Spider-Man: Into/Across the Spider-Verse' film aesthetic — 3D
+# modeled but rendered through 2D comic-print techniques: CMYK halftone,
+# chromatic aberration, hand-inked outlines, neon rim lighting.
+
+_SPIDERVERSE_STYLE_PREAMBLE = (
+    "Authentic still frame from the film 'Spider-Man: Into the Spider-Verse'. "
+    "This is a SCREEN-PRINTED COMIC look — ink on paper, not a clean digital render. "
+    "ABSOLUTE MUST-HAVES, in priority order: "
+    "(1) HEAVY BLACK HAND-INKED OUTLINES — thick, chunky, bold comic ink around every shape; "
+    "the linework is the most important feature; never thin, never smooth digital lines. "
+    "(2) HEAVY CHROMATIC ABERRATION — red and cyan color channels visibly offset and misaligned "
+    "along every edge, like a misprinted comic; the colors deliberately do not line up perfectly. "
+    "(3) BIG VISIBLE HALFTONE DOTS — you can clearly see the individual printed Ben-Day dots in "
+    "every shadow, gradient, and flat color area. "
+    "(4) NEON RIM LIGHT in magenta or cyan outlining the character's silhouette. "
+    "(5) FLAT CEL-SHADED color — hard-edged posterized shadow shapes, zero soft blending. "
+    "Reinforce: thick black ink contours + offset red/cyan misregistration + coarse halftone dots are "
+    "the three features that define this style — they must be obvious at a glance. "
+    "Hyper-saturated clashing colors. "
+    "Warm child-friendly proportions: large round head, soft rounded face, big simple eyes, "
+    "stubby limbs — a young kid hero, never a sharp adult build."
+)
+
+_SPIDERVERSE_MEDICAL_SOFTENING = (
+    "Bandages or casts are bold comic shapes covered in stickers, stars, and marker doodles. "
+    "Any stethoscope is a fun neon color with a halftone-dotted disc. "
+    "Medicine is small glowing candy-like power-up shapes in a friendly container. "
+    "Any IV is a small friendly glowing pouch with a smiley face, thin clean line, no visible needle. "
+    "Hospital settings become vibrant stylized comic backdrops — warm saturated colors, rounded furniture, "
+    "halftone walls. The child hero always looks brave, determined, or joyful — never scared or in pain. "
+    "A friendly companion (animal sidekick or kind adult) is present, drawn in the same comic style."
+)
+
+_SPIDERVERSE_EXCLUSIONS = (
+    "NOT a smooth clean digital illustration. NOT soft airbrushed rendering. "
+    "NOT thin delicate linework — the ink must be THICK and BLACK. "
+    "NOT perfectly-aligned colors — the red/cyan offset must be visible. "
+    "NOT smooth Pixar/Disney 3D. NOT glossy anime eyes. NOT photorealistic. "
+    "NO readable text, letters, or numbers. "
+    "Friendly, warm, child-safe imagery only. "
+    "NO cluttered background — ONE clear focal point. "
+    "Full-bleed, no borders or frames."
+)
+
+
+# ── Style preset registry ────────────────────────────────────────────
+#
+# Each preset owns everything style-specific: visual preamble, medical
+# softening rules, exclusions, background block, mood, character archetype
+# templates (per gender), proportions sentence, expression block, and a
+# non-medical companion-creature block.
+
+_GHIBLI_ARCHETYPES = {
+    'male': (
+        "short tousled dark-brown hair rendered as soft rounded clumps, "
+        "wearing a loose oversized muted-yellow or soft-green t-shirt and dark-brown short pants"
+    ),
+    'female': (
+        "voluminous messy warm red-orange hair radiating outward rendered as soft rounded clumps, "
+        "wearing a simple A-line dress in cherry red or soft pink with white bloomers peeking at hem"
+    ),
+    'neutral': (
+        "warm brown tousled hair rendered as soft rounded clumps, "
+        "wearing a cozy muted-colored outfit"
+    ),
+}
+
+_SPIDERVERSE_ARCHETYPES = {
+    'male': (
+        "short curly dark hair with energy, "
+        "wearing a hooded sneaker-culture hero outfit — bright graphic jacket over a tee, "
+        "in clashing saturated colors with neon accent piping"
+    ),
+    'female': (
+        "tousled shoulder-length hair with a bold colored streak, "
+        "wearing a hooded hero outfit with a graphic jacket in vivid clashing colors "
+        "and neon accent trim"
+    ),
+    'neutral': (
+        "expressive tousled hair with a neon streak, "
+        "wearing a colorful hooded hero outfit with bold graphic accents"
+    ),
+}
+
+_STYLE_PRESETS = {
+    'ghibli': {
+        'preamble': _GHIBLI_STYLE_PREAMBLE,
+        'exclusions': _GHIBLI_EXCLUSIONS,
+        'medical_softening': _GHIBLI_MEDICAL_SOFTENING,
+        'archetypes': _GHIBLI_ARCHETYPES,
+        'proportions': (
+            "with Ghibli child proportions — large round head, high forehead, "
+            "soft circular face, round puffy cheeks, stubby limbs, mitten-like hands"
+        ),
+        'expression': (
+            "Warm and brave — large round dark eyes with single white highlight dot top-left, "
+            "tiny dot nose, simple small mouth expressing the emotion of this scene. "
+            "Round puffy cheeks with subtle warm-pink blush if showing strong positive emotion."
+        ),
+        'companion_non_medical': (
+            "Any companion animals use equally round blobby proportions with large shiny eyes "
+            "and flat cel-shaded fur in 2 warm tones."
+        ),
+        'background': (
+            "Painterly Ghibli watercolor background — softer and less detailed than the foreground character. "
+            "Lush layered foliage or warm indoor setting with rounded furniture, soft rugs, potted plants. "
+            "Signature Ghibli cumulus clouds if sky is visible (big fluffy rounded shapes, soft gray-blue shadow undersides). "
+            "Warm golden ambient light from windows or soft lamps."
+        ),
+        'mood': "Warm, magical, safe, hopeful, and brave — a frame from a hand-animated children's film.",
+    },
+    'spider-punk': {
+        'preamble': _SPIDERVERSE_STYLE_PREAMBLE,
+        'exclusions': _SPIDERVERSE_EXCLUSIONS,
+        'medical_softening': _SPIDERVERSE_MEDICAL_SOFTENING,
+        'archetypes': _SPIDERVERSE_ARCHETYPES,
+        # Anti-anime guard lives inside proportions itself so it rides high in the prompt.
+        'proportions': (
+            "with warm child proportions — large round head, soft rounded face, "
+            "big simple eyes (NOT glossy anime eyes, NOT sparkly), stubby limbs, a young kid"
+        ),
+        'expression': (
+            "Brave and expressive comic-hero face conveying this scene's emotion, "
+            "with a few small hand-drawn energy marks (motion ticks or tiny stars) near the head."
+        ),
+        'companion_non_medical': (
+            "Companion animals drawn in the same comic style — bold black ink outlines, "
+            "cel-shaded saturated tones, halftone shadow dots, neon rim light."
+        ),
+        # Background deliberately simplified to ONE focal point — previous version
+        # produced cluttered rainbow/sparks/city noise that competed with the style.
+        'background': (
+            "SIMPLE and uncluttered — ONE dominant saturated color field with a subtle "
+            "halftone gradient, plus a few clean hand-drawn speed lines pointing to the hero. "
+            "Avoid competing elements; the character is the single clear focal point. "
+            "Background stays flatter and more abstract than the sharply-inked foreground."
+        ),
+        'mood': (
+            "Electric, heroic, joyful, empowering — a vibrant Spider-Verse film frame, safe for a child."
+        ),
+    },
+}
+
+_DEFAULT_STYLE = 'ghibli'
 
 
 # ── Image prompt builder ─────────────────────────────────────────────
@@ -402,33 +549,21 @@ def build_image_prompt(base_prompt: str, child_name: str, age: int,
                        gender: str, page_number: int, total_pages: int,
                        illustration_style: str = '',
                        character_description: str = '') -> str:
-    """Build a Ghibli-style image generation prompt using the Section 7
-    structured format from the CartoonCare Visual Story Engine spec."""
+    """Build a styled image generation prompt using the Section 7
+    structured format. Visual style is selected via ``illustration_style``
+    (currently ``ghibli`` or ``spider-punk``)."""
 
-    # CHARACTER — map gender to Ghibli template archetype
-    if gender == 'male':
-        gender_label = 'boy'
-        archetype = (
-            "short tousled dark-brown hair rendered as soft rounded clumps, "
-            "wearing a loose oversized muted-yellow or soft-green t-shirt and dark-brown short pants"
-        )
-    elif gender == 'female':
-        gender_label = 'girl'
-        archetype = (
-            "voluminous messy warm red-orange hair radiating outward rendered as soft rounded clumps, "
-            "wearing a simple A-line dress in cherry red or soft pink with white bloomers peeking at hem"
-        )
-    else:
-        gender_label = 'child'
-        archetype = (
-            "warm brown tousled hair rendered as soft rounded clumps, "
-            "wearing a cozy muted-colored outfit"
-        )
+    # Pick visual style preset (defaults to Ghibli)
+    style_key = (illustration_style or _DEFAULT_STYLE).strip().lower()
+    preset = _STYLE_PRESETS.get(style_key, _STYLE_PRESETS[_DEFAULT_STYLE])
+
+    # CHARACTER — map gender to the preset's archetype
+    gender_label = 'boy' if gender == 'male' else 'girl' if gender == 'female' else 'child'
+    archetype_key = gender if gender in ('male', 'female') else 'neutral'
+    archetype = preset['archetypes'].get(archetype_key, preset['archetypes']['neutral'])
 
     char_detail = (
-        f"{age}-year-old {gender_label} with Ghibli child proportions — large round head, "
-        f"high forehead, soft circular face, round puffy cheeks, stubby limbs, mitten-like hands. "
-        f"{archetype}."
+        f"{age}-year-old {gender_label} {preset['proportions']}. {archetype}."
     )
     if character_description:
         char_detail += f" Additional appearance: {character_description}."
@@ -441,33 +576,25 @@ def build_image_prompt(base_prompt: str, child_name: str, age: int,
             'stethoscope', 'thermometer', 'x-ray', 'injection',
         )
     )
-    accessories_block = _GHIBLI_MEDICAL_SOFTENING if medical_context else (
-        "Any companion animals use equally round blobby proportions with large shiny eyes "
-        "and flat cel-shaded fur in 2 warm tones."
-    )
+    accessories_block = preset['medical_softening'] if medical_context else preset['companion_non_medical']
 
     # Structured prompt following Section 7 output format
     prompt = (
-        f"[STYLE]: {_GHIBLI_STYLE_PREAMBLE}\n"
+        f"[STYLE]: {preset['preamble']}\n"
         f"[CHARACTER]: {char_detail} "
         f"Same character appearance maintained consistently across all {total_pages} pages of this story.\n"
-        f"[EXPRESSION]: Warm and brave — large round dark eyes with single white highlight dot top-left, "
-        f"tiny dot nose, simple small mouth expressing the emotion of this scene. "
-        f"Round puffy cheeks with subtle warm-pink blush if showing strong positive emotion.\n"
+        f"[EXPRESSION]: {preset['expression']}\n"
         f"[POSE]: {base_prompt}\n"
         f"[ACCESSORIES]: {accessories_block}\n"
-        f"[BACKGROUND]: Painterly Ghibli watercolor background — softer and less detailed than the foreground character. "
-        f"Lush layered foliage or warm indoor setting with rounded furniture, soft rugs, potted plants. "
-        f"Signature Ghibli cumulus clouds if sky is visible (big fluffy rounded shapes, soft gray-blue shadow undersides). "
-        f"Warm golden ambient light from windows or soft lamps.\n"
-        f"[COMPOSITION]: Story page {page_number} of {total_pages}. Eye-level or slightly below camera angle for warmth. "
-        f"Generous breathing room around character, natural slightly offset placement (not centered). "
-        f"Square 1:1 aspect ratio, high resolution storybook page.\n"
-        f"[MOOD]: Warm, magical, safe, hopeful, and brave — a frame from a hand-animated children's film.\n"
-        f"[EXCLUSIONS]: {_GHIBLI_EXCLUSIONS}"
+        f"[BACKGROUND]: {preset['background']}\n"
+        f"[COMPOSITION]: Story page {page_number} of {total_pages}. "
+        f"{'Dynamic comic-poster framing — gentle dutch tilt or low hero angle, character slightly off-center, strong frozen motion, GENEROUS NEGATIVE SPACE (no background clutter). ' if style_key == 'spider-punk' else 'Eye-level or slightly below camera angle for warmth. Generous breathing room around character, natural slightly offset placement (not centered). '}"
+        f"3:2 landscape aspect ratio, high resolution storybook page.\n"
+        f"[MOOD]: {preset['mood']}\n"
+        f"[EXCLUSIONS]: {preset['exclusions']}"
     )
 
-    logger.debug(f'Built Ghibli image prompt for page {page_number}/{total_pages}')
+    logger.debug(f'Built {style_key} image prompt for page {page_number}/{total_pages}')
     return prompt
 
 

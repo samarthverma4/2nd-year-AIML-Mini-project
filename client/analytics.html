@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Engagement Analytics — Cartoon Care</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="/css/styles.css" />
+  <style>
+    .an-wrap { max-width: 1100px; margin: 0 auto; padding: 3rem 1.5rem 5rem; }
+    .an-head h1 { font-size: 2rem; margin-bottom: .5rem; }
+    .an-head p { color: var(--muted-fg); margin-bottom: 2rem; }
+    .an-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+      gap: 1.5rem;
+    }
+    .an-card {
+      background: var(--card);
+      border: 2px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.5rem;
+    }
+    .an-card h3 {
+      font-family: var(--font-display);
+      font-size: 1.05rem;
+      color: var(--primary);
+      margin-bottom: 1rem;
+    }
+    .an-card.full { grid-column: 1 / -1; }
+    .an-card canvas { max-height: 300px; }
+    .an-empty { text-align: center; padding: 4rem 1rem; color: var(--muted-fg); }
+    .an-locked {
+      max-width: 540px; margin: 5rem auto;
+      background: var(--card);
+      border: 2px solid var(--border);
+      border-radius: var(--radius);
+      padding: 3rem 2rem; text-align: center;
+    }
+    .an-locked h2 { font-size: 1.6rem; color: var(--primary); margin-bottom: .75rem; }
+    .an-locked p { color: var(--muted-fg); margin-bottom: 1.5rem; line-height: 1.5; }
+  </style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="/" class="nav-logo">
+      <div class="nav-logo-icon">
+        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/>
+        </svg>
+      </div>
+      Cartoon Care
+    </a>
+    <div class="nav-auth" id="nav-auth"></div>
+  </div>
+</nav>
+
+<main class="an-wrap" id="an-wrap">
+  <div class="an-head">
+    <h1>Engagement analytics</h1>
+    <p>How children in your organisation are using their stories — last 30 days.</p>
+  </div>
+  <div id="an-content"></div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="/js/analytics.js"></script>
+</body>
+</html>

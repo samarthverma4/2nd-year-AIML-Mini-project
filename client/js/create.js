@@ -136,6 +136,7 @@ document.getElementById('create-form').addEventListener('submit', async (e) => {
     const villainType      = (form.villainType      && form.villainType.value)      || '';
     const endingType       = (form.endingType       && form.endingType.value)       || '';
     const readingLevel     = (form.readingLevel     && form.readingLevel.value)     || '';
+    const illustrationStyle = (form.illustrationStyle && form.illustrationStyle.value) || '';
 
     if (storyLength)      body.storyLength      = storyLength;
     if (tone)             body.tone             = tone;
@@ -143,6 +144,7 @@ document.getElementById('create-form').addEventListener('submit', async (e) => {
     if (villainType)      body.villainType      = villainType;
     if (endingType)       body.endingType       = endingType;
     if (readingLevel)     body.readingLevel     = readingLevel;
+    if (illustrationStyle) body.illustrationStyle = illustrationStyle;
 
     const res = await fetch('/api/stories/generate', {
       method: 'POST',

@@ -162,7 +162,11 @@ async function loadStory() {
     const res = await fetch(`/api/stories/${storyId()}`, { headers: authHeaders() });
     if (!res.ok) throw new Error('Not found');
     story = await res.json();
-    pages = typeof story.pages === 'string' ? JSON.parse(story.pages) : (story.pages || []);
+    if (typeof story.pages === 'string') {
+      try { pages = JSON.parse(story.pages); } catch { pages = []; }
+    } else {
+      pages = story.pages || [];
+    }
     isFav = !!story.isFavorite;
     document.title = `${story.storyTitle} · Brave Story Maker`;
     updateFavBtn();
@@ -319,19 +323,72 @@ function updateNavBtns() {
   }
 }
 
+function _preloadAdjacentImages() {
+  [currentPage - 1, currentPage + 1].forEach(i => {
+    const p = pages[i];
+    if (!p || !p.imageUrl || preloadedImageUrls.has(p.imageUrl)) return;
+    preloadedImageUrls.add(p.imageUrl);
+    const im = new Image(); im.src = p.imageUrl;
+  });
+}
+
+function _prefersReducedMotion() {
+  return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+let _flipInProgress = false;
+
 function changePage(delta) {
+  if (_flipInProgress) return;
   hideAutoAdvanceCountdown();
   const next = currentPage + delta;
-  clearPageContentForTransition(next);
-  Narrator.stop();
   if (next < 0 || next >= pages.length) return;
-  currentPage = next;
-  renderPage();
-  // animate card
+
   const card = document.getElementById('story-card');
-  card.classList.remove('fade-in');
+  const dir  = delta > 0 ? 'next' : 'prev';
+  Narrator.stop();
+  _preloadAdjacentImages();
+
+  if (_prefersReducedMotion() || !card) {
+    clearPageContentForTransition(next);
+    currentPage = next;
+    renderPage();
+    _announcePage();
+    return;
+  }
+
+  _flipInProgress = true;
+  card.classList.remove('fade-in', 'pf-flip-next-in', 'pf-flip-prev-in');
   void card.offsetWidth;
-  card.classList.add('fade-in');
+  card.classList.add(`pf-flip-${dir}-out`);
+
+  const half = 260;   // swap content at the apex of the curl
+  const full = 520;   // total flip duration (matches CSS)
+  setTimeout(() => {
+    clearPageContentForTransition(next);
+    currentPage = next;
+    renderPage();
+    _announcePage();
+    card.classList.remove(`pf-flip-${dir}-out`);
+    card.classList.add(`pf-flip-${dir}-in`);
+  }, half);
+  setTimeout(() => {
+    card.classList.remove(`pf-flip-${dir}-in`);
+    _flipInProgress = false;
+  }, full + 20);
+}
+
+function _announcePage() {
+  let live = document.getElementById('pf-live');
+  if (!live) {
+    live = document.createElement('div');
+    live.id = 'pf-live';
+    live.setAttribute('aria-live', 'polite');
+    live.setAttribute('aria-atomic', 'true');
+    live.style.cssText = 'position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);';
+    document.body.appendChild(live);
+  }
+  live.textContent = `Page ${currentPage + 1} of ${pages.length}`;
 }
 
 function clearHighlight() {
@@ -1100,6 +1157,17 @@ function applyTextDirection(dir) {
   container.setAttribute('dir', dir || 'ltr');
 }
 
+function showTranslateLoading(langLabel) {
+  const ov = document.getElementById('translate-overlay');
+  const tx = document.getElementById('translate-overlay-text');
+  if (tx) tx.textContent = langLabel ? `Translating to ${langLabel}…` : 'Translating story…';
+  if (ov) ov.classList.remove('hidden');
+}
+function hideTranslateLoading() {
+  const ov = document.getElementById('translate-overlay');
+  if (ov) ov.classList.add('hidden');
+}
+
 async function translatePage(lang) {
   if (lang === 'en') {
     currentLang = 'en';
@@ -1108,23 +1176,36 @@ async function translatePage(lang) {
     return;
   }
 
-  const key = `${lang}:${currentPage}`;
-  if (transCache[key]) {
+  // Figure out which pages still need translating.
+  const missingIdx = [];
+  const missingText = [];
+  pages.forEach((p, i) => {
+    const txt = (p && p.text) || '';
+    if (!txt) return;
+    if (!transCache[`${lang}:${i}`]) {
+      missingIdx.push(i);
+      missingText.push(txt);
+    }
+  });
+
+  // Everything already cached → just switch language and render.
+  if (missingIdx.length === 0) {
     currentLang = lang;
     applyTextDirection(transDirCache[lang] || 'ltr');
     renderPage();
     return;
   }
 
-  const text = pages[currentPage]?.text || '';
-  if (!text) return;
+  const langOpt = document.querySelector(`#lang-select option[value="${lang}"]`);
+  const langLabel = langOpt ? langOpt.textContent.replace(/^[^A-Za-z]+/, '').trim() : lang;
+  showTranslateLoading(langLabel);
 
   try {
     const res = await fetch('/api/translate', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body:    JSON.stringify({
-        texts:       [text],
+        texts:       missingText,
         target_lang: lang,
         story_id:    storyId(),
       }),
@@ -1134,20 +1215,27 @@ async function translatePage(lang) {
         showToast('Translation is unavailable right now', 'error');
       } else if (res.status === 401) {
         showToast('Please log in to translate', 'error');
+      } else if (res.status === 413) {
+        showToast('Story too long to translate in one go', 'error');
       } else {
         showToast('Translation failed — try again', 'error');
       }
       return;
     }
     const data = await res.json();
-    const translated = (data.translated && data.translated[0]) || text;
-    transCache[key]        = translated;
-    transDirCache[lang]    = data.direction || 'ltr';
+    const translated = data.translated || [];
+    missingIdx.forEach((pageIdx, i) => {
+      const t = translated[i] || pages[pageIdx].text;
+      transCache[`${lang}:${pageIdx}`] = t;
+    });
+    transDirCache[lang] = data.direction || 'ltr';
     currentLang = lang;
     applyTextDirection(data.direction);
     renderPage();
   } catch {
     showToast('Translation failed — try again', 'error');
+  } finally {
+    hideTranslateLoading();
   }
 }
 
@@ -1272,3 +1360,143 @@ setupPopovers();
 setupAutoAdvanceControls();
 Narrator.init();
 loadStory();
+
+// ── Page-flip: swipe + keyboard + ARIA ─────────────────
+(function setupPageFlipInteractions() {
+  const card = document.getElementById('story-card');
+  const prevBtn = document.getElementById('prev-btn');
+  const nextBtn = document.getElementById('next-btn');
+  if (!card) return;
+
+  // ARIA — make the card a labelled storybook region.
+  card.setAttribute('role', 'region');
+  card.setAttribute('aria-roledescription', 'storybook page');
+  card.setAttribute('aria-label', 'Story page');
+  if (prevBtn && !prevBtn.getAttribute('aria-label')) prevBtn.setAttribute('aria-label', 'Previous page');
+  if (nextBtn && !nextBtn.getAttribute('aria-label')) nextBtn.setAttribute('aria-label', 'Next page');
+
+  // Keyboard arrows (ignore when typing into a field).
+  document.addEventListener('keydown', (e) => {
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+    if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      if (pages.length && currentPage < pages.length - 1) changePage(1);
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      if (currentPage > 0) changePage(-1);
+    }
+  });
+
+  // Pointer-driven swipe with live curl tracking.
+  let drag = null;
+  card.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    // Don't hijack drags that start on interactive children (buttons/words).
+    if (e.target.closest('button, a, input, select, .word-span')) return;
+    drag = { startX: e.clientX, width: card.clientWidth || 1, dir: 0, progress: 0, pid: e.pointerId };
+    try { card.setPointerCapture(e.pointerId); } catch (_) {}
+    card.classList.add('pf-dragging');
+  });
+  card.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const dx = e.clientX - drag.startX;
+    if (Math.abs(dx) < 6) return;
+    const dir = dx < 0 ? 1 : -1;
+    if ((dir > 0 && currentPage >= pages.length - 1) || (dir < 0 && currentPage <= 0)) return;
+    drag.dir = dir;
+    drag.progress = Math.min(1, Math.abs(dx) / drag.width);
+    const angle = drag.progress * 35 * -drag.dir; // soft curl during drag (capped)
+    card.style.transform = `rotateY(${angle}deg)`;
+    card.style.opacity = String(1 - drag.progress * 0.4);
+  });
+  function endDrag() {
+    if (!drag) return;
+    const d = drag; drag = null;
+    card.classList.remove('pf-dragging');
+    card.style.transform = '';
+    card.style.opacity = '';
+    if (d.dir && d.progress > 0.35) changePage(d.dir);
+  }
+  card.addEventListener('pointerup', endDrag);
+  card.addEventListener('pointercancel', endDrag);
+  card.addEventListener('pointerleave', (e) => { if (drag && e.pointerId === drag.pid) endDrag(); });
+})();
+
+// ── Fullscreen toggle ──────────────────────────────────
+(function () {
+  const btn = document.getElementById('fullscreen-btn');
+  if (!btn) return;
+  const enterIcon = document.getElementById('fullscreen-icon-enter');
+  const exitIcon  = document.getElementById('fullscreen-icon-exit');
+  const target = document.getElementById('viewer-root') || document.documentElement;
+
+  function isFs() {
+    return !!(document.fullscreenElement || document.webkitFullscreenElement);
+  }
+  function syncIcon() {
+    const fs = isFs();
+    if (enterIcon) enterIcon.style.display = fs ? 'none' : '';
+    if (exitIcon)  exitIcon.style.display  = fs ? '' : 'none';
+    btn.classList.toggle('active', fs);
+    btn.title = fs ? 'Exit fullscreen (F)' : 'Fullscreen (F)';
+  }
+  async function toggleFs() {
+    try {
+      if (isFs()) {
+        await (document.exitFullscreen?.() ?? document.webkitExitFullscreen?.());
+      } else {
+        await (target.requestFullscreen?.() ?? target.webkitRequestFullscreen?.());
+      }
+    } catch (e) {
+      if (typeof showToast === 'function') showToast('Fullscreen not available', 'error');
+    }
+  }
+
+  btn.addEventListener('click', toggleFs);
+  document.addEventListener('fullscreenchange', syncIcon);
+  document.addEventListener('webkitfullscreenchange', syncIcon);
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'f' && e.key !== 'F') return;
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+    e.preventDefault();
+    toggleFs();
+  });
+
+  syncIcon();
+})();
+
+// ── PDF export (Caregiver+ tier) ───────────────────────
+(function () {
+  const btn = document.getElementById('pdf-btn');
+  if (!btn) return;
+  fetch('/api/subscription/status', { headers: authHeaders() })
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      if (data && data.features && data.features.pdf_export) {
+        btn.classList.remove('hidden');
+      }
+    })
+    .catch(() => {});
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    try {
+      const resp = await fetch(`/api/stories/${storyId()}/pdf`, { headers: authHeaders() });
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}));
+        showToast(body.message || 'PDF export failed', 'error');
+        return;
+      }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'story.pdf';
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+})();

@@ -162,10 +162,11 @@ class TestStoryEndpointHeroCharacter:
             hero_characteristics='determined',
             story_title="Zara's Space Mission",
             pages=[{'text': 'Blast off!', 'imageUrl': None, 'pageNumber': 1}],
-            user_id=None,
+            user_id=1,
             hero_character=hero_char,
         )
         assert story is not None
-        fetched = db.get_story(story['id'])
+        # get_story now requires user_id for ownership scoping.
+        fetched = db.get_story(story['id'], user_id=1)
         assert fetched is not None  # type narrowing for Pylance
         assert fetched['heroCharacter'] == hero_char  # noqa: E501

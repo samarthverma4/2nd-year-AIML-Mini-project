@@ -18,7 +18,21 @@ from flask import request, jsonify, g
 
 logger = logging.getLogger('brave_story.auth')
 
-SECRET_KEY = secrets.token_hex(32)
+_jwt_secret_env = os.environ.get('JWT_SECRET_KEY')
+if _jwt_secret_env:
+    SECRET_KEY = _jwt_secret_env
+else:
+    # In production, refuse to start without a stable secret — otherwise
+    # every restart silently invalidates all tokens and multiple workers
+    # would each sign with a different key.
+    if os.environ.get('FLASK_DEBUG', '1') != '1' or os.environ.get('FLASK_ENV') == 'production':
+        raise RuntimeError(
+            'JWT_SECRET_KEY environment variable is required in production. '
+            'Set it to a stable, random 32+ byte hex string.'
+        )
+    SECRET_KEY = secrets.token_hex(32)
+    logger.warning('JWT_SECRET_KEY not set — generated an ephemeral dev secret. '
+                   'All tokens will be invalidated on restart.')
 TOKEN_EXPIRY_HOURS = int(os.environ.get('TOKEN_EXPIRY_HOURS', '72'))
 ALGORITHM = 'HS256'
 
