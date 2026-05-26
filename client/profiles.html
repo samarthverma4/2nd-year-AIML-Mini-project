@@ -79,6 +79,7 @@ body {
   font-family: var(--ff-head); font-size: 1.35rem; font-weight: 700;
   color: var(--primary); letter-spacing: .01em;
 }
+.logo-img { height: 34px; width: auto; display: block; }
 
 /* ── Page shell ──────────────────────────────────────────── */
 .page {
@@ -374,7 +375,7 @@ h1 {
   h1 { font-size: 2rem; margin-bottom: 2rem; }
   .char-wrap, .fuzzy, .add-box { width: 118px; height: 118px; }
   .profiles { gap: 20px; }
-  .logo-word { display: none; }
+  .logo-img { height: 28px; }
 }
 @media (max-width: 480px) {
   h1 { font-size: 1.6rem; margin-bottom: 1.5rem; }
@@ -474,13 +475,7 @@ h1 {
 
 <!-- CartoonCare logo — top-left (mirrors Netflix logo position) -->
 <a class="logo" href="/" aria-label="CartoonCare home">
-  <div class="logo-gem">
-    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none"
-      stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/>
-    </svg>
-  </div>
-  <span class="logo-word">CartoonCare</span>
+  <img src="/images/cartooncare-logo.svg" alt="CartoonCare" class="logo-img" />
 </a>
 
 <!-- Loading screen -->
